@@ -1,141 +1,100 @@
 from langchain.tools import tool
-from database import LocalSession, Todo
-from datetime import datetime
 
-
-### CRUD
+from services import (
+    TASK_PRIORITIES,
+    TASK_STATUSES,
+    delete_task,
+    get_task,
+    list_tasks,
+    save_task,
+)
 
 
 @tool
 def create_todo(
-    title: str, description: str = "", priority: str = "medium", due_date: str = ""
+    title: str,
+    description: str = "",
+    priority: str = "medium",
+    due_date: str = "",
+    estimated_minutes: int = 30,
+    category: str = "",
 ):
-    """
-    Create and save a new todo task.
-
-    Args:
-        title: Short title for the task (required)
-        description: Optional detailed note of the task
-        priority: 'low', 'medium', or 'high' (default medium)
-        due_date: Optional due date of thsk. e.g. '25-03-2026'
-    """
-
-    task_priority = "medium"
-    if priority.lower() in ["low", "high", "medium"]:
-        task_priority = priority
-
-    with LocalSession() as session:
-        todo = Todo(
-            title=title,
-            description=description,
-            priority=task_priority,
-            due_date=due_date,
-            created_at=datetime.now().strftime("%d-%m-%Y %H:%M"),
-        )
-
-        session.add(todo)
-        session.commit()
-
-        session.refresh(todo)
-
-        return f"""
-            Todo created !
-            Id: {todo.id} | Title: {todo.title}, | priority: {todo.priority}
-        """
+    """Create a task. Dates should be YYYY-MM-DD; priority is low, medium, or high."""
+    if priority.lower() not in TASK_PRIORITIES:
+        return "Choose low, medium, or high priority."
+    task_id = save_task(
+        title=title,
+        description=description,
+        priority=priority.lower(),
+        due_date=due_date,
+        estimated_minutes=estimated_minutes,
+        category=category,
+    )
+    return f"Task #{task_id} created: {title}"
 
 
 @tool
 def list_todos(status: str = "all", priority: str = "all"):
-    """
-    List all todos. Optionally filter by status or priority.
-
-    Args:
-        status:   'pending', 'in_progress', 'done', or 'all'
-        priority: 'low', 'medium', 'high', or 'all'
-    """
-
-    with LocalSession() as sesion:
-        query = sesion.query(Todo)
-
-        if status != "all":
-            query = query.filter(Todo.status == status)
-
-        if priority != "all":
-            query = query.filter(Todo.priority == priority)
-
-        todos = query.order_by(Todo.id).all()
-
-        if not todos:
-            return f"No todos found for your filter values"
-
-        allTodos = [todo.to_dict() for todo in todos]
-
-        return allTodos
+    """List tasks, optionally filtered by status or priority."""
+    normalized_status = status.lower()
+    normalized_priority = priority.lower()
+    if normalized_status != "all" and normalized_status not in TASK_STATUSES:
+        return "Choose pending, in_progress, blocked, done, or all for status."
+    if normalized_priority != "all" and normalized_priority not in TASK_PRIORITIES:
+        return "Choose low, medium, high, or all for priority."
+    return [
+        task.to_dict()
+        for task in list_tasks(
+            status="All" if normalized_status == "all" else normalized_status,
+            priority="All" if normalized_priority == "all" else normalized_priority,
+        )
+    ]
 
 
 @tool
 def update_todos(
     todo_id: int,
-    title: str,
+    title: str = "",
     description: str = "",
     status: str = "",
     priority: str = "",
     due_date: str = "",
+    estimated_minutes: int | None = None,
 ):
-    """
-    Update an existing todo by its ID. Only provide the fields you want to change.
-
-    Args:
-        todo_id:     ID of the todo to update (required)
-        title:       New title (leave empty to keep current)
-        description: New description (leave empty to keep current)
-        status:      New status — 'pending', 'in_progress', or 'done'
-        priority:    New priority — 'low', 'medium', or 'high'
-        due_date:    New due date e.g. '2025-12-25'
-    """
-
-    with LocalSession() as session:
-        todo = session.get(Todo, todo_id)
-        if not todo:
-            return f"Todo with id {todo_id} not found"
-
-        if title:
-            todo.title = title
-        if description:
-            todo.description = description
-        if status:
-            todo.status = status
-
-        if priority:
-            todo.priority = priority
-
-        if due_date:
-            todo.due_date = due_date
-
-        session.commit()
-        session.refresh(todo)
-
-        return f"""
-            Todo: {todo.id} updated !
-            {todo.to_dict()}
-        """
+    """Update the supplied fields of a task by ID; leave unchanged fields empty."""
+    task = get_task(todo_id)
+    if task is None:
+        return f"Task #{todo_id} was not found."
+    normalized_status = status.lower() if status else task.status
+    normalized_priority = priority.lower() if priority else task.priority
+    try:
+        save_task(
+            todo_id=todo_id,
+            title=title or task.title,
+            description=description or task.description,
+            status=normalized_status,
+            priority=normalized_priority,
+            due_date=due_date or task.due_date,
+            estimated_minutes=estimated_minutes or task.estimated_minutes,
+            actual_minutes=task.actual_minutes,
+            project_id=task.project_id,
+            tags=task.tags,
+            category=task.category,
+        )
+    except ValueError as error:
+        return str(error)
+    return f"Task #{todo_id} updated: {title or task.title}"
 
 
 @tool
 def delete_todo(todo_id: int):
-    """
-    Permanently delete a todo by its ID.
-
-    Args:
-        todo_id: ID of the todo to delete (required)
-    """
-    with LocalSession() as session:
-        todo = session.get(Todo, todo_id)
-        if not todo:
-            return f"Todo with id {todo_id} not found"
-
-        title = todo.title
-        session.delete(todo)
-        session.commit()
-
-        return f"Todo #{title} deleted successfully !"
+    """Permanently delete a task by ID."""
+    try:
+        task = get_task(todo_id)
+        if task is None:
+            return f"Task #{todo_id} was not found."
+        title = task.title
+        delete_task(todo_id)
+        return f"Task #{todo_id} ({title}) deleted."
+    except ValueError as error:
+        return str(error)
